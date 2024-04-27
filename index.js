@@ -27,6 +27,10 @@ if (require.main === module) {
       '--nsec-file <filename>',
       'Listen to nostr messages to this nsec.',
     )
+    .option(
+      '--save-nsec',
+      'If the nsec file was not found, generate a random nsec and save it in the same path.',
+    )  
     .option('--timeout <timeout>', 'Timeout in milliseconds', 300000)
     .option(
       '--response-manipulator <filename>',
