@@ -49,7 +49,7 @@ if (require.main === module) {
     .option(
       '--exit-on-file-change',
       'Exit when the files in --relays-file, --nsec-file or --response-manipulator-file change\
- by an external process. Usefulto reboot the server when those configuration change (don\'t\
+ by an external process. Useful to reboot the server when those configuration change (don\'t\
  forget to start the process again after it dies, using docker-compose configuration or some\
  other way).',
     )
