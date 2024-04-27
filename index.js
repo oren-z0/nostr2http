@@ -30,7 +30,11 @@ if (require.main === module) {
     .option(
       '--save-nsec',
       'If the nsec file was not found, generate a random nsec and save it in the same path.',
-    )  
+    )
+    .option(
+      '--save-npub-file <filename>',
+      'Save the npub of used nsec. Useful for other processes to read it.',
+    )
     .option('--timeout <timeout>', 'Timeout in milliseconds', 300000)
     .option(
       '--response-manipulator-file <filename>',
