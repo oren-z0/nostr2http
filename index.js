@@ -37,6 +37,12 @@ if (require.main === module) {
       'A script that can change the response before the nostr message is sent.',
     )
     .option(
+      '--allowed-routes <patterns...>',
+      'A list of route patterns to allow (see:\
+ https://www.npmjs.com/package/minimatch). To disallow a pattern, add a \'!\' prefix. For complex\
+ rewrites and redirects we recommend installing a separated reverse-proxy.',
+    )
+    .option(
       '--exit-on-file-change',
       'Exit when the files in --relays-file, --nsec-file or --response-manipulator-file change\
  by an external process. Usefulto reboot the server when those configuration change (don\'t\
