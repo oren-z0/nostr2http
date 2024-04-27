@@ -33,8 +33,15 @@ if (require.main === module) {
     )  
     .option('--timeout <timeout>', 'Timeout in milliseconds', 300000)
     .option(
-      '--response-manipulator <filename>',
+      '--response-manipulator-file <filename>',
       'A script that can change the response before the nostr message is sent.',
+    )
+    .option(
+      '--exit-on-file-change',
+      'Exit when the files in --relays-file, --nsec-file or --response-manipulator-file change\
+ by an external process. Usefulto reboot the server when those configuration change (don\'t\
+ forget to start the process again after it dies, using docker-compose configuration or some\
+ other way).',
     )
     .option('-v, --verbose', 'Verbose logs')
     .argument('<destination>', 'Destination url prefix (i.e. http://localhost:8080/subroute)')
