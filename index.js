@@ -47,6 +47,11 @@ if (require.main === module) {
  rewrites and redirects we recommend installing a separated reverse-proxy.',
     )
     .option(
+      '--nprofile-max-relays',
+      'Max number of relays to include in the printed NIP-19 nprofile entity',
+      5,
+    )
+    .option(
       '--exit-on-file-change',
       'Exit when the files in --relays-file, --nsec-file or --response-manipulator-file change\
  by an external process. Useful to reboot the server when those configuration change (don\'t\
