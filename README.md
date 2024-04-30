@@ -20,7 +20,7 @@ npx http2nostr https://api.thecatapi.com --nsec-file ~/my-nsec.txt --save-nsec -
 ```
 $ npx nostr2http --help
 
-Usage: http2nostr [options] <destination>
+Usage: nostr2http [options] <destination>
 
 A simple http proxy that forwards all requests as nostr direct-messages.
 
@@ -40,7 +40,8 @@ Options:
   --response-manipulator-file <filename>  A script that can change the response before the nostr message is sent.
   --allowed-routes <patterns...>          A list of route patterns to allow (see: https://www.npmjs.com/package/minimatch). To disallow a pattern, add a '!' prefix. For
                                           complex rewrites and redirects we recommend installing a separated reverse-proxy.
-  --exit-on-file-change                   Exit when the files in --relays-file, --nsec-file or --response-manipulator-file change by an external process. Usefulto reboot
+  --nprofile-max-relays                   Max number of relays to include in the printed NIP-19 nprofile entity
+  --exit-on-file-change                   Exit when the files in --relays-file, --nsec-file or --response-manipulator-file change by an external process. Useful to reboot
                                           the server when those configuration change (don't forget to start the process again after it dies, using docker-compose
                                           configuration or some other way).
   -v, --verbose                           Verbose logs

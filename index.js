@@ -7,7 +7,7 @@ if (require.main === module) {
   const { program } = require('commander');
   const { version } = require('./package');
   program
-    .name('http2nostr')
+    .name('nostr2http')
     .description('A simple http proxy that forwards all requests as nostr direct-messages.')
     .version(version)
 
