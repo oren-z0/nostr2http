@@ -14,7 +14,7 @@ be a path that begins with '/', and cannot be a complete url as used in general-
 
 For example:
 ```
-npx http2nostr https://api.thecatapi.com --nsec-file ~/my-nsec.txt --save-nsec --relays wss://relay.damus.io wss://nos.lol wss://relay.snort.social wss://nostr.wine --allowed-routes '/v1/images/**'
+npx nostr2http https://api.thecatapi.com --nsec-file ~/my-nsec.txt --save-nsec --relays wss://relay.damus.io wss://nos.lol wss://relay.snort.social wss://nostr.wine --allowed-routes '/v1/images/**'
 ```
 
 ```
