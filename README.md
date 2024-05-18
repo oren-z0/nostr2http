@@ -36,6 +36,8 @@ Options:
   --nsec-file <filename>                  Listen to nostr messages to this nsec.
   --save-nsec                             If the nsec file was not found, generate a random nsec and save it in the same path.
   --save-npub-file <filename>             Save the npub of used nsec. Useful for other processes to read it.
+  --save-nprofile-file <filename>         Save the nprofile of used nsec, which contains both the npub and relay hints (see  --nprofile-max-relays). Useful for other
+                                          processes to read it.
   --timeout <timeout>                     Timeout in milliseconds (default: 300000)
   --response-manipulator-file <filename>  A script that can change the response before the nostr message is sent.
   --allowed-routes <patterns...>          A list of route patterns to allow (see: https://www.npmjs.com/package/minimatch). To disallow a pattern, add a '!' prefix. For

@@ -35,6 +35,11 @@ if (require.main === module) {
       '--save-npub-file <filename>',
       'Save the npub of used nsec. Useful for other processes to read it.',
     )
+    .option(
+      '--save-nprofile-file <filename>',
+      'Save the nprofile of used nsec, which contains both the npub and relay hints (see \
+ --nprofile-max-relays). Useful for other processes to read it.',
+    )
     .option('--timeout <timeout>', 'Timeout in milliseconds', 300000)
     .option(
       '--response-manipulator-file <filename>',
