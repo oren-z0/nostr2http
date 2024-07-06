@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "nostr2http",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A simple http reverse-proxy that forwards nostr direct-messages as http requests.",
   "exports": "./dist/index.js",
   "scripts": {
