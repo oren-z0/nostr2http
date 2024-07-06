@@ -1,3 +1,4 @@
+import process from 'node:process';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import {existsSync, readFileSync, writeFileSync, watchFile, mkdirSync, unwatchFile} from 'node:fs';
