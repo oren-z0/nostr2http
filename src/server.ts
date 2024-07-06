@@ -365,7 +365,7 @@ export async function runServer(destination: string, options: RunServerOptions):
                 verboseLog(`${requestEvent.id}: Handled event`);
                 return;
               }
-              handledRequestIds.set(requestEvent.id, requestEvent.created_at);
+              handledRequestIds.set(unsignedRequest.id, unsignedRequest.created_at);
               requestMessage = JSON.parse(unsignedRequest.content);
               if (!requestMessage || typeof requestMessage !== 'object') {
                 throw new Error('Unexpected content type');
