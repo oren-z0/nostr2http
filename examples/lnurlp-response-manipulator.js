@@ -9,13 +9,13 @@
 //  --nsec-file my-nsec.txt --save-nsec --allowed-routes '/lnurlp/**' --response-manipulator-file
 //  lnurlp-response-manipulator.js http://127.0.0.1:3007
 
-export default ({responseMessage, destination, nprofile}) => {
-  if (responseMessage.headers['content-type'] !== 'application/json') {
+export default ({response, destination, nprofile}) => {
+  if (response.headers['content-type'] !== 'application/json') {
     return;
   }
   let responseBody;
   try {
-    responseBody = JSON.parse(responseMessage.bodyBuffer);
+    responseBody = JSON.parse(response.bodyBuffer);
   } catch (err) {
     console.error('Failed to parse json body', err);
     return;
@@ -29,7 +29,7 @@ export default ({responseMessage, destination, nprofile}) => {
     return;
   }
   return {
-    ...responseMessage,
+    ...response,
     bodyBuffer: Buffer.from(
       JSON.stringify({
         ...responseBody,

@@ -26,6 +26,13 @@ const SealKind = 13;
 const HttpRequestKind = 80;
 const HttpResponseKind = 81;
 
+// NIP-44 limits the size of the encrypted content to 64k. We want to split the body of the http
+// response to chunks small enough so they could be encoded in base64, joined with other
+// metadata (response status & headers), and encrypted twice: first for the seal, and then for
+// the gift-wrap (the first encyption adds an overhead that should be considered in the second
+// encryption).
+const partBodyMaxSize = 16384;
+
 type RequestModule = typeof http | typeof https;
 
 function getRequestModule(url: string): RequestModule {
@@ -93,10 +100,33 @@ function readWriteRelays({relays, relaysFile}: ReadWriteRelaysOptions): string[]
 
 interface RequestMessage {
   id: string;
+  partIndex: number;
+  parts: number;
+  url?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  bodyBase64: string;
+}
+
+interface ResponseMessage {
+  id: string;
+  partIndex: number;
+  parts: number;
+  status?: number;
+  headers?: Record<string, string>;
+  bodyBase64: string;
+}
+
+interface PendingRequest {
+  requestMessages: Map<number, RequestMessage>;
+  timeout: NodeJS.Timeout;
+}
+
+interface RequestInfo {
   url: string;
   method: string;
   headers: Record<string, string>;
-  bodyBase64: string;
+  bodyBuffer: Buffer;
 }
 
 interface ResponseInfo {
@@ -106,8 +136,8 @@ interface ResponseInfo {
 }
 
 interface ResponseManipulatorOptions {
-  requestMessage: RequestMessage;
-  responseMessage: ResponseInfo;
+  request: RequestInfo;
+  response: ResponseInfo;
   secretKey: Uint8Array;
   destination: string;
   nprofile: string;
@@ -130,7 +160,7 @@ interface GetResponseOptions {
 }
 
 async function getResponse(
-  requestMessage: RequestMessage,
+  requestInfo: RequestInfo,
   {
     logPrefix,
     requestModule,
@@ -145,9 +175,9 @@ async function getResponse(
 ): Promise<ResponseInfo> {
   try {
     const isRouteAllowed =
-      requestMessage.url[0] === '/' &&
-      (positiveMinimatchers === undefined || positiveMinimatchers.some(m => m.match(requestMessage.url))) &&
-      !negativeMinimatchers.some(m => m.match(requestMessage.url));
+      requestInfo.url[0] === '/' &&
+      (positiveMinimatchers === undefined || positiveMinimatchers.some(m => m.match(requestInfo.url))) &&
+      !negativeMinimatchers.some(m => m.match(requestInfo.url));
     if (!isRouteAllowed) {
       console.warn(`${logPrefix}: Forbidden route`);
       return {
@@ -156,13 +186,13 @@ async function getResponse(
         bodyBuffer: Buffer.from('Forbidden route'),
       };
     }
-    const responseMessage = await new Promise<ResponseInfo>((resolve, reject) => {
+    const responseInfo = await new Promise<ResponseInfo>((resolve, reject) => {
       const httpRequest = requestModule.request(
-        destination + requestMessage.url,
+        destination + requestInfo.url,
         {
           timeout,
-          method: requestMessage.method,
-          headers: requestMessage.headers,
+          method: requestInfo.method,
+          headers: requestInfo.headers,
         },
         res => {
           const responseChunks: Buffer[] = [];
@@ -184,20 +214,20 @@ async function getResponse(
         }
       );
       httpRequest.on('error', err => reject(err));
-      httpRequest.end(Buffer.from(requestMessage.bodyBase64, 'base64'));
+      httpRequest.end(requestInfo.bodyBuffer);
     });
     if (!responseManipulatorModule) {
-      return responseMessage;
+      return responseInfo;
     }
     const newResponseMessage = await responseManipulatorModule.default({
-      requestMessage,
-      responseMessage,
+      request: requestInfo,
+      response: responseInfo,
       secretKey,
       destination,
       nprofile,
     });
     if (newResponseMessage === undefined) {
-      return responseMessage;
+      return responseInfo;
     }
     if (!newResponseMessage || typeof newResponseMessage !== 'object') {
       throw new Error('Response manipulator did not return an object.');
@@ -297,6 +327,7 @@ export async function runServer(destination: string, options: RunServerOptions):
   ];
   let pool: SimplePool | undefined = new SimplePool();
   const handledEventTimes = new Map<string, number>();
+  const pendingRequests = new Map<string, PendingRequest>();
   const subscribe = (since: number) =>
     pool?.subscribeMany(
       initialRelayUrls,
@@ -312,7 +343,9 @@ export async function runServer(destination: string, options: RunServerOptions):
         onevent: async (requestEvent: NostrEvent): Promise<void> => {
           handledEventTimes.set(requestEvent.id, requestEvent.created_at);
           try {
-            verboseLog(`${requestEvent.id}: Received event: ${JSON.stringify(requestEvent)}`);
+            verboseLog(
+              `${requestEvent.id}: Received event: ${JSON.stringify({...requestEvent, content: '...'})}, content-size: ${requestEvent.content.length}`
+            );
             if (requestEvent.kind !== EphemeralGiftWrapKind) {
               return;
             }
@@ -323,8 +356,9 @@ export async function runServer(destination: string, options: RunServerOptions):
                 requestEvent.content,
                 nip44.getConversationKey(secretKey, requestEvent.pubkey)
               );
-              verboseLog(`${requestEvent.id}: Decrypted seal: ${JSON.stringify(decryptedSeal)}`);
+              verboseLog(`${requestEvent.id}: Decrypted seal`);
               requestSeal = JSON.parse(decryptedSeal);
+              verboseLog(`${requestEvent.id}: Parsed seal id: ${requestSeal.id}, kind: ${requestSeal.kind}`);
               if (requestSeal.kind !== SealKind) {
                 return;
               }
@@ -336,7 +370,7 @@ export async function runServer(destination: string, options: RunServerOptions):
                 requestSeal.content,
                 nip44.getConversationKey(secretKey, requestSeal.pubkey)
               );
-              verboseLog(`${requestEvent.id}: Decrypted content: ${JSON.stringify(decryptedContent)}`);
+              verboseLog(`${requestEvent.id}: Decrypted content.`);
               const unsignedRequest: Omit<NostrEvent, 'sig'> = JSON.parse(decryptedContent);
               if (unsignedRequest.kind !== HttpRequestKind) {
                 return;
@@ -370,112 +404,201 @@ export async function runServer(destination: string, options: RunServerOptions):
               if (!requestMessage || typeof requestMessage !== 'object') {
                 throw new Error('Unexpected content type');
               }
-              const {id, headers, method, url, bodyBase64} = requestMessage;
+              const {id, partIndex, parts, headers, method, url, bodyBase64} = requestMessage;
               if (!id || typeof id !== 'string' || id.length > 100) {
                 throw new Error('Unexpected type for field: id');
               }
-              if (!url || typeof url !== 'string') {
-                throw new Error('Unexpected type for field: url');
+              if (!Number.isSafeInteger(partIndex) || partIndex < 0) {
+                throw new Error('Unexpected type for field: partIndex');
               }
-              if (!method || typeof method !== 'string') {
-                throw new Error('Unexpected type for field: method');
-              }
-              if (!headers || typeof headers !== 'object' || Object.values(headers).some(v => typeof v !== 'string')) {
-                throw new Error('Unexpected type for field: headers');
+              if (!Number.isSafeInteger(parts) || parts < 1) {
+                throw new Error('Unexpected type for field: partIndex');
               }
               if (typeof bodyBase64 !== 'string') {
                 throw new Error('Unexpected type for field: bodyBase64');
+              }
+              if (partIndex === 0) {
+                if (!url || typeof url !== 'string') {
+                  throw new Error('Unexpected type for field: url');
+                }
+                if (!method || typeof method !== 'string') {
+                  throw new Error('Unexpected type for field: method');
+                }
+                if (
+                  !headers ||
+                  typeof headers !== 'object' ||
+                  Object.values(headers).some(v => typeof v !== 'string')
+                ) {
+                  throw new Error('Unexpected type for field: headers');
+                }
               }
             } catch (err) {
               console.error(`${requestEvent.id}: Failed to handle event`, err);
               return;
             }
-            const logPrefix = `${requestEvent.id}:${JSON.stringify(requestMessage.id)}`;
+            const logPrefix = `${requestEvent.id}:${JSON.stringify(requestMessage.id)}:${requestMessage.partIndex}/${requestMessage.parts}`;
+            verboseLog(`${logPrefix}: received part.`);
+            if (!pendingRequests.has(requestMessage.id)) {
+              pendingRequests.set(requestMessage.id, {
+                requestMessages: new Map(),
+                timeout: setTimeout(() => {
+                  pendingRequests.delete(requestMessage.id);
+                }, 60_000).unref(),
+              });
+            }
+            const pendingRequest = pendingRequests.get(requestMessage.id)!;
+            pendingRequest.requestMessages.set(requestMessage.partIndex, requestMessage);
+            if (pendingRequest.requestMessages.size < requestMessage.parts) {
+              return;
+            }
+            clearTimeout(pendingRequest.timeout);
+            pendingRequests.delete(requestMessage.id);
+            const firstRequestMessage = pendingRequest.requestMessages.get(0);
+            if (!firstRequestMessage) {
+              throw new Error(`Malformed request sequence`);
+            }
             console.info(
               `${logPrefix}: ${nip19.npubEncode(
                 requestSeal.pubkey
-              )} ${JSON.stringify(requestMessage.method)} ${JSON.stringify(requestMessage.url)}`
+              )} ${JSON.stringify(firstRequestMessage.method)} ${JSON.stringify(firstRequestMessage.url)}`
             );
-            const responseMessage = await getResponse(requestMessage, {
-              logPrefix,
-              requestModule,
-              destination,
-              positiveMinimatchers,
-              negativeMinimatchers,
-              timeout: Number(options.timeout),
-              responseManipulatorModule,
-              secretKey,
-              nprofile,
-            });
-            const {bodyBuffer, ...other} = responseMessage;
-            const stringifiedResponseMessage = JSON.stringify({
-              bodyBase64: bodyBuffer.toString('base64'),
-              ...other,
-              id: requestMessage.id,
-            });
-            verboseLog(`${logPrefix}: Sending response: ${stringifiedResponseMessage}`);
-            const now = Math.floor(Date.now() / 1000);
-            const unsignedResponse: UnsignedEvent = {
-              kind: HttpResponseKind,
-              tags: [],
-              content: stringifiedResponseMessage,
-              created_at: now,
-              pubkey: publicKey,
-            };
-            const finalUnsignedResponseStringified = JSON.stringify({
-              ...unsignedResponse,
-              id: getEventHash(unsignedResponse),
-            });
-            verboseLog(`${logPrefix}: final unsigned response: ${finalUnsignedResponseStringified}`);
-            const responseSeal = finalizeEvent(
+            const responseInfo = await getResponse(
               {
-                created_at: now - randomInt(0, 48 * 3600),
-                kind: SealKind,
+                url: firstRequestMessage.url!,
+                method: firstRequestMessage.method!,
+                headers: firstRequestMessage.headers!,
+                bodyBuffer: Buffer.concat(
+                  Array.from({length: pendingRequest.requestMessages.size}).map((_, index) =>
+                    Buffer.from(pendingRequest.requestMessages.get(index)?.bodyBase64 ?? '', 'base64')
+                  )
+                ),
+              },
+              {
+                logPrefix,
+                requestModule,
+                destination,
+                positiveMinimatchers,
+                negativeMinimatchers,
+                timeout: Number(options.timeout),
+                responseManipulatorModule,
+                secretKey,
+                nprofile,
+              }
+            );
+            const {bodyBuffer, ...other} = responseInfo;
+            verboseLog(`${logPrefix}: Response ${JSON.stringify(other)}, body-size: ${bodyBuffer.length}`);
+            const bodyBase64Chunks: [string, number][] = [];
+            if (bodyBuffer.length === 0) {
+              bodyBase64Chunks.push(['', 0]);
+            } else {
+              for (let partIndex = 0; partIndex * partBodyMaxSize < bodyBuffer.length; partIndex += 1) {
+                bodyBase64Chunks.push([
+                  bodyBuffer
+                    .subarray(partIndex * partBodyMaxSize, (partIndex + 1) * partBodyMaxSize)
+                    .toString('base64'),
+                  partIndex,
+                ]);
+              }
+            }
+            for (const [bodyBase64Chunk, partIndex] of bodyBase64Chunks) {
+              const responseMessage: ResponseMessage = {
+                id: requestMessage.id,
+                partIndex: partIndex,
+                parts: bodyBase64Chunks.length,
+                ...(partIndex === 0 && {
+                  status: responseInfo.status,
+                  headers: Object.fromEntries(
+                    Object.entries(responseInfo.headers).map(([headerName, headerValue]) => [
+                      headerName,
+                      Array.isArray(headerValue) ? headerValue[0] : headerValue ?? '',
+                    ])
+                  ),
+                }),
+                bodyBase64: bodyBase64Chunk,
+              };
+              verboseLog(`${logPrefix}: Sending response part ${partIndex}/${bodyBase64Chunks.length}`);
+              const now = Math.floor(Date.now() / 1000);
+              const unsignedResponse: UnsignedEvent = {
+                kind: HttpResponseKind,
                 tags: [],
-                content: nip44.encrypt(
-                  finalUnsignedResponseStringified,
-                  nip44.getConversationKey(secretKey, requestSeal.pubkey)
-                ),
-              },
-              secretKey
-            );
-            verboseLog(`${logPrefix}: response seal: ${JSON.stringify(responseSeal)}`);
-            const randomPrivateKey = generateSecretKey();
-            verboseLog(`${logPrefix}: random public key: ${getPublicKey(randomPrivateKey)}`);
-            const safeRelays = initialRelayUrls.filter(relay => {
-              const parsedRelay = new URL(relay);
-              // Don't publish relay addresses that might contain sensitive information
-              return !parsedRelay.username && !parsedRelay.password && !parsedRelay.search;
-            });
-            const responseEvent = finalizeEvent(
-              {
+                content: JSON.stringify(responseMessage),
                 created_at: now,
-                kind: EphemeralGiftWrapKind,
-                tags: [
-                  ['p', requestSeal.pubkey, safeRelays[0]],
-                  ...(safeRelays.length > 1 ? [['relays', ...safeRelays.slice(1)]] : []),
-                ],
-                content: nip44.encrypt(
-                  JSON.stringify(responseSeal),
-                  nip44.getConversationKey(randomPrivateKey, requestSeal.pubkey)
-                ),
-              },
-              randomPrivateKey
-            );
-            verboseLog(`${logPrefix}: publishing response event: ${JSON.stringify(responseEvent)}`);
-            // Ugly code, but its the only way I found to log which relay caused the problem.
-            await Promise.all(
-              initialRelayUrls.map(async initialRelayUrl => {
-                if (!pool) {
-                  return;
-                }
-                try {
-                  await Promise.all(pool.publish([initialRelayUrl], responseEvent));
-                } catch (error) {
-                  console.error(`${logPrefix}: Failed to send reply on ${initialRelayUrl}`, error);
-                }
-              })
-            );
+                pubkey: publicKey,
+              };
+              const unsignedResponseId = getEventHash(unsignedResponse);
+              const finalUnsignedResponse = {
+                ...unsignedResponse,
+                id: unsignedResponseId,
+              };
+              const finalUnsignedResponseStringified = JSON.stringify(finalUnsignedResponse);
+              verboseLog(
+                `${logPrefix}: unsigned response: ${JSON.stringify({
+                  ...finalUnsignedResponse,
+                  content: '...',
+                })}, content-size: ${finalUnsignedResponse.content.length}, total-size: ${finalUnsignedResponseStringified.length}`
+              );
+              const responseSealContent = nip44.encrypt(
+                finalUnsignedResponseStringified,
+                nip44.getConversationKey(secretKey, requestSeal.pubkey)
+              );
+              const responseSeal = finalizeEvent(
+                {
+                  created_at: now - randomInt(0, 48 * 3600),
+                  kind: SealKind,
+                  tags: [],
+                  content: responseSealContent,
+                },
+                secretKey
+              );
+              const responseSealStringified = JSON.stringify(responseSeal);
+              verboseLog(
+                `${logPrefix}: response seal: ${JSON.stringify({
+                  ...responseSeal,
+                  content: '...',
+                })}, content-size: ${responseSealContent.length} total-size: ${responseSealStringified.length}`
+              );
+              const randomPrivateKey = generateSecretKey();
+              verboseLog(`${logPrefix}: random public key: ${getPublicKey(randomPrivateKey)}`);
+              const safeRelays = initialRelayUrls.filter(relay => {
+                const parsedRelay = new URL(relay);
+                // Don't publish relay addresses that might contain sensitive information
+                return !parsedRelay.username && !parsedRelay.password && !parsedRelay.search;
+              });
+              const responseEvent = finalizeEvent(
+                {
+                  created_at: now,
+                  kind: EphemeralGiftWrapKind,
+                  tags: [
+                    ['p', requestSeal.pubkey, safeRelays[0]],
+                    ...(safeRelays.length > 1 ? [['relays', ...safeRelays.slice(1)]] : []),
+                  ],
+                  content: nip44.encrypt(
+                    responseSealStringified,
+                    nip44.getConversationKey(randomPrivateKey, requestSeal.pubkey)
+                  ),
+                },
+                randomPrivateKey
+              );
+              verboseLog(
+                `${logPrefix}: publishing response event: ${JSON.stringify({
+                  ...responseEvent,
+                  content: '...',
+                })}, content-size ${responseEvent.content.length}`
+              );
+              // Ugly code, but its the only way I found to log which relay caused the problem.
+              await Promise.all(
+                initialRelayUrls.map(async initialRelayUrl => {
+                  if (!pool) {
+                    return;
+                  }
+                  try {
+                    await Promise.all(pool.publish([initialRelayUrl], responseEvent));
+                  } catch (error) {
+                    console.error(`${logPrefix}: Failed to send reply on ${initialRelayUrl}`, error);
+                  }
+                })
+              );
+            }
             console.info(`${logPrefix}: done`);
           } catch (error) {
             console.error(`Failed to handle event ${requestEvent.id}`, error);
