@@ -32,6 +32,16 @@ const HttpResponseKind = 81;
 // the gift-wrap (the first encyption adds an overhead that should be considered in the second
 // encryption).
 const partBodyMaxSize = 16384;
+const acceptableDelaySeconds = 60;
+const acceptableFutureGapSeconds = 600;
+const handledRequestIdsCleanupIntervalMs = 600_000;
+const messageIdMaxLength = 100;
+const creationTimeRandomizationSeconds = 48 * 3600;
+const pendingRequestTimeoutMs = 60_000;
+const resubscribeIntervalMs = 3_600_000;
+const firstRelayConnectionTimeMs = 1000;
+const secondaryRelayConnectionTimeMs = 5000;
+const exitTimeoutSeconds = 10;
 
 type RequestModule = typeof http | typeof https;
 
@@ -317,13 +327,13 @@ export async function runServer(destination: string, options: RunServerOptions):
   const handledRequestIds = new Map<string, number>();
   const intervals = [
     setInterval(() => {
-      oldestTime = Date.now() / 1000 - 60; // up to 1 minute delay
+      oldestTime = Date.now() / 1000 - acceptableDelaySeconds;
       for (const [requestId, requestTime] of [...handledRequestIds.entries()]) {
         if (requestTime < oldestTime) {
           handledRequestIds.delete(requestId);
         }
       }
-    }, 600_000),
+    }, handledRequestIdsCleanupIntervalMs),
   ];
   let pool: SimplePool | undefined = new SimplePool();
   const handledEventTimes = new Map<string, number>();
@@ -391,7 +401,7 @@ export async function runServer(destination: string, options: RunServerOptions):
                 verboseLog(`${requestEvent.id}: Old event`);
                 return;
               }
-              if (Date.now() / 1000 + 600 < unsignedRequest.created_at) {
+              if (Date.now() / 1000 + acceptableFutureGapSeconds < unsignedRequest.created_at) {
                 verboseLog(`${requestEvent.id}: Future event`);
                 return;
               }
@@ -405,7 +415,7 @@ export async function runServer(destination: string, options: RunServerOptions):
                 throw new Error('Unexpected content type');
               }
               const {id, partIndex, parts, headers, method, url, bodyBase64} = requestMessage;
-              if (!id || typeof id !== 'string' || id.length > 100) {
+              if (!id || typeof id !== 'string' || id.length > messageIdMaxLength) {
                 throw new Error('Unexpected type for field: id');
               }
               if (!Number.isSafeInteger(partIndex) || partIndex < 0) {
@@ -443,7 +453,7 @@ export async function runServer(destination: string, options: RunServerOptions):
                 requestMessages: new Map(),
                 timeout: setTimeout(() => {
                   pendingRequests.delete(requestMessage.id);
-                }, 60_000).unref(),
+                }, pendingRequestTimeoutMs).unref(),
               });
             }
             const pendingRequest = pendingRequests.get(requestMessage.id)!;
@@ -543,7 +553,7 @@ export async function runServer(destination: string, options: RunServerOptions):
               );
               const responseSeal = finalizeEvent(
                 {
-                  created_at: now - randomInt(0, 48 * 3600),
+                  created_at: now - randomInt(0, creationTimeRandomizationSeconds),
                   kind: SealKind,
                   tags: [],
                   content: responseSealContent,
@@ -607,10 +617,10 @@ export async function runServer(destination: string, options: RunServerOptions):
       }
     );
   verboseLog('Connecting to relays');
-  let subscription = subscribe(Math.ceil(Date.now() / 1000) - 48 * 3600);
+  let subscription = subscribe(Math.ceil(Date.now() / 1000) - creationTimeRandomizationSeconds);
   intervals.push(
     setInterval(() => {
-      const since = Math.ceil(Date.now() / 1000) - 48 * 3600;
+      const since = Math.ceil(Date.now() / 1000) - creationTimeRandomizationSeconds;
       const newSubsription = subscribe(since);
       subscription?.close();
       subscription = newSubsription;
@@ -619,13 +629,13 @@ export async function runServer(destination: string, options: RunServerOptions):
           handledEventTimes.delete(eventId);
         }
       }
-    }, 3_600_000)
+    }, resubscribeIntervalMs)
   );
-  await sleep(1000);
+  await sleep(firstRelayConnectionTimeMs);
   let relaysStatuses = await getRelaysStatuses(pool, initialRelayUrls);
   if (relaysStatuses.every(status => !status.isConnected)) {
     // wait some more
-    await sleep(5000);
+    await sleep(secondaryRelayConnectionTimeMs);
     relaysStatuses = await getRelaysStatuses(pool, initialRelayUrls);
     if (relaysStatuses.every(status => !status.isConnected)) {
       console.error('Failed to connect to any of the relays.');
@@ -657,9 +667,9 @@ export async function runServer(destination: string, options: RunServerOptions):
   }
   const exit = () => {
     setTimeout(() => {
-      console.error('Failed to close connections after 10 seconds');
+      console.error(`Failed to close connections after ${exitTimeoutSeconds} seconds`);
       process.exit(-1);
-    }, 10_000).unref();
+    }, exitTimeoutSeconds * 1000).unref();
     if (pool) {
       pool.close(initialRelayUrls);
       pool = undefined;
