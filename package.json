@@ -1,8 +1,8 @@
 {
   "type": "module",
   "name": "nostr2http",
-  "version": "1.0.1",
-  "description": "A simple http reverse-proxy that forwards nostr direct-messages as http requests.",
+  "version": "1.1.0",
+  "description": "A simple http reverse-proxy that forwards a new kind of nostr events as http requests.",
   "exports": "./dist/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
