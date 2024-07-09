@@ -620,6 +620,7 @@ export async function runServer(destination: string, options: RunServerOptions):
   let subscription = subscribe(Math.ceil(Date.now() / 1000) - creationTimeRandomizationSeconds);
   intervals.push(
     setInterval(() => {
+      verboseLog('Resubscribing to new events and deleting old event-ids.');
       const since = Math.ceil(Date.now() / 1000) - creationTimeRandomizationSeconds;
       const newSubsription = subscribe(since);
       subscription?.close();
